@@ -1,51 +1,99 @@
-version: '3'
-services:
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:6.5.0
-    container_name: elasticsearch
-    environment:
-      - cluster.name=docker-cluster
-      - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    volumes:
-      - esdata1:/usr/share/elasticsearch/data
-    ports:
-      - 9200:9200
-    networks:
-      - esnet
-  elasticsearch2:
-    image: docker.elastic.co/elasticsearch/elasticsearch:6.5.0
-    container_name: elasticsearch2
-    environment:
-      - cluster.name=docker-cluster
-      - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "discovery.zen.ping.unicast.hosts=elasticsearch"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    volumes:
-      - esdata2:/usr/share/elasticsearch/data
-    networks:
-      - esnet
-  kibana:
-    image: docker.elastic.co/kibana/kibana:6.5.0
-    container_name: kibana
-    ports:
-      - "5601:5601"
-    networks:
-      - esnet
+version: '3.5'
 
-volumes:
-  esdata1:
-    driver: local
-  esdata2:
-    driver: local
+x-networks: &es7-network
+  networks:
+    - esnet
 
 networks:
   esnet:
+
+x-es7-common: &es7-common
+    image: docker.elastic.co/elasticsearch/elasticsearch:${VERSION}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+x-es7-option: &es7-option
+      # クラスタ名
+      cluster.name: 'docker-cluster'
+      # ノードあたりの割当メモリ
+      ES_JAVA_OPTS: '-Xms512m -Xmx512m'
+      # スワップ無効化
+      bootstrap.memory_lock: 'true'
+
+# Dataノード
+x-es7-node: &es7-node
+    <<: *es7-common
+    <<: *es7-network
+    environment:
+      <<: *es7-option
+      node.master: "false"
+      node.data: "true"
+      node.ingest: "false"
+      discovery.seed_hosts: "elasticsearch"
+    
+
+# Masterノード
+x-es7-master: &es7-master
+    <<: *es7-common
+    <<: *es7-network
+    environment:
+      <<: *es7-option
+      node.master: "true"
+      node.data: "false"
+      node.ingest: "false"
+      cluster.initial_master_nodes: "elasticsearch"
+      node.name: "elasticsearch"
+    # ノード数に応じて変更する
+    depends_on: 
+      - "elasticsearch-data1"
+      - "elasticsearch-data2"
+      - "elasticsearch-data3"
+
+# ノード数に応じて変更する
+volumes:
+  es7-master1:
+  es7-data1:
+  es7-data2:
+  es7-data3:
+
+services:
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${VERSION}
+    ports: [ '5601:5601']
+    depends_on: [ 'elasticsearch' ]
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    <<: *es7-network
+
+  elasticsearch:
+    ports:
+      - "9200:9200"
+    volumes: [ 'es7-master1:/usr/share/elasticsearch/data' ]
+    <<: *es7-master
+
+  # ノード数に応じて変更する
+  elasticsearch-data1:
+    volumes: [ 'es7-data1:/usr/share/elasticsearch/data' ]
+    <<: *es7-node
+
+  elasticsearch-data2:
+    volumes: [ 'es7-data2:/usr/share/elasticsearch/data' ]
+    <<: *es7-node
+
+  elasticsearch-data3:
+    volumes: [ 'es7-data3:/usr/share/elasticsearch/data' ]
+    <<: *es7-node
+
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:${VERSION}
+    environment: 
+      - output.elasticsearch.hosts=["elasticsearch:9200"]
+    user: root
+    volumes: 
+      - ./conf/metricbeat.docker.yml:/usr/share/metricbeat/metricbeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+    <<: *es7-network
